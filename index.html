@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Халид — голосовой помощник</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700&family=Inter:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app"></div>
+<script>
+const rnd = a => a[Math.floor(Math.random() * a.length)];
+const has = (t, kws) => kws.some(k => t.toLowerCase().includes(k));
+
+const CMDS = [
+  {icon:'ti-hand',          label:'Привет / Пока',       cat:'Общение'},
+  {icon:'ti-mood-smile',    label:'Как дела?',            cat:'Общение'},
+  {icon:'ti-info-circle',   label:'Кто ты?',              cat:'Общение'},
+  {icon:'ti-list',          label:'Команды / Помощь',     cat:'Общение'},
+  {icon:'ti-search',        label:'Найди [запрос]',       cat:'Поиск'},
+  {icon:'ti-world',         label:'Открой сайт [адрес]',  cat:'Поиск'},
+  {icon:'ti-brand-google',  label:'Гугл / Google',        cat:'Поиск'},
+  {icon:'ti-brand-youtube', label:'YouTube / Ютуб',       cat:'Поиск'},
+  {icon:'ti-language',      label:'Переведи [слово]',     cat:'Поиск'},
+  {icon:'ti-calculator',    label:'Посчитай [пример]',    cat:'Поиск'},
+  {icon:'ti-clock',         label:'Который час?',         cat:'Дата/Время'},
+  {icon:'ti-calendar',      label:'Какое сегодня число?', cat:'Дата/Время'},
+  {icon:'ti-cloud-rain',    label:'Погода [город]',       cat:'Дата/Время'},
+  {icon:'ti-calendar-event',label:'Завтра / Вчера',       cat:'Дата/Время'},
+  {icon:'ti-music',         label:'Включи музыку',        cat:'Развлечения'},
+  {icon:'ti-movie',         label:'Фильм [название]',     cat:'Развлечения'},
+  {icon:'ti-pizza',         label:'Додо Пицца',           cat:'Развлечения'},
+  {icon:'ti-brand-vk',      label:'ВКонтакте',            cat:'Развлечения'},
+  {icon:'ti-volume',        label:'Тише / Громче на [N]', cat:'Утилиты'},
+  {icon:'ti-volume-off',    label:'Замолчи',              cat:'Утилиты'},
+  {icon:'ti-refresh',       label:'Повтори',              cat:'Утилиты'},
+  {icon:'ti-brain',         label:'Пошути',               cat:'Утилиты'},
+  {icon:'ti-math',          label:'Сколько будет [X*Y]',  cat:'Утилиты'},
+  {icon:'ti-map-pin',       label:'Где находится [место]',cat:'Утилиты'},
+];
+
+let status = 'idle', vol = 80, log = [], voices = [], cmdsOpen = false;
+const volRef = { current: 80 };
+let lastSaid = '';
+
+function loadVoices() {
+  voices = window.speechSynthesis?.getVoices() || [];
+  updateVoiceInfo();
+}
+function updateVoiceInfo() {
+  const el = document.getElementById('voice-info');
+  if (!el) return;
+  const all = window.speechSynthesis?.getVoices() || [];
+  const chosen = all.find(x => /pavel/i.test(x.name))
+    || all.find(x => x.lang.startsWith('ru') && /male|pavel|dmitri|yuri|andrey/i.test(x.name))
+    || all.find(x => x.lang.startsWith('ru'));
+  el.textContent = chosen ? '🔊 голос: ' + chosen.name : '🔊 голос по умолчанию';
+}
+function showVoices() {
+  const all = window.speechSynthesis?.getVoices() || [];
+  const ru = all.filter(x => x.lang.startsWith('ru'));
+  alert('Русские голоса:\n' + (ru.length ? ru.map(x => x.name + ' (' + x.lang + ')').join('\n') : 'нет') + '\n\nВсе: ' + all.length + ' шт.');
+}
+loadVoices();
+window.speechSynthesis?.addEventListener('voiceschanged', loadVoices);
+
+function go(url) { window.open(url, '_blank'); }
+
+function addLog(text, type) {
+  log.push({ text, type, id: Date.now() + Math.random() });
+  if (log.length > 60) log = log.slice(-60);
+  render();
+  requestAnimationFrame(() => document.getElementById('log-bottom')?.scrollIntoView({ behavior: 'smooth' }));
+}
+
+function say(text) {
+  lastSaid = text;
+  addLog(text, 'bot');
+  if (!window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+
+  function _speak(allVoices) {
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'ru-RU';
+    u.volume = volRef.current / 100;
+    u.rate = 1.1;
+    u.pitch = 0.7;
+    const chosen = allVoices.find(x => /pavel/i.test(x.name))
+      || allVoices.find(x => x.lang.startsWith('ru') && /male|pavel|dmitri|yuri|andrey|alexander|mikhail|denis|kostya|maxim/i.test(x.name))
+      || allVoices.find(x => x.lang.startsWith('ru'));
+    if (chosen) { u.voice = chosen; u.lang = chosen.lang; }
+    status = 'saying'; render();
+    u.onend = u.onerror = () => { status = 'idle'; render(); };
+    window.speechSynthesis.speak(u);
+  }
+
+  const v = window.speechSynthesis.getVoices();
+  if (v.length > 0) {
+    _speak(v);
+  } else {
+    window.speechSynthesis.onvoiceschanged = () => {
+      window.speechSynthesis.onvoiceschanged = null;
+      _speak(window.speechSynthesis.getVoices());
+    };
+    setTimeout(() => _speak(window.speechSynthesis.getVoices()), 300);
+  }
+}
+
+function calcExpr(t) {
+  const expr = t
+    .replace(/плюс/gi, '+').replace(/минус/gi, '-')
+    .replace(/умножить на/gi, '*').replace(/разделить на/gi, '/')
+    .replace(/в степени/gi, '**')
+    .replace(/[^0-9+\-*/.() ]/g, '').trim();
+  if (!expr) return null;
+  try {
+    const res = Function('"use strict"; return (' + expr + ')')();
+    if (typeof res === 'number' && isFinite(res)) return res;
+  } catch (e) {}
+  return null;
+}
+
+function handle(raw) {
+  const t = raw.toLowerCase().trim();
+  addLog(raw, 'user');
+
+  // Громкость
+  const vm = t.match(/громкост[ья]\s+(?:на\s+)?(\d+)/);
+  const vp = t.match(/(?:громче|повыс[ьи])\s+(?:на\s+)?(\d+)/);
+  const vd = t.match(/(?:тише|потише|убавь|уменьши)\s+(?:на\s+)?(\d+)/);
+  if (vm) { const v = Math.min(100, Math.max(0, +vm[1])); vol = v; volRef.current = v; say(`Громкость ${v} процентов`); render(); return; }
+  if (vp) { const v = Math.min(100, volRef.current + (+vp[1])); vol = v; volRef.current = v; say(`Сделал громче, теперь ${v} процентов`); render(); return; }
+  if (vd) { const v = Math.max(0, volRef.current - (+vd[1])); vol = v; volRef.current = v; say(`Сделал тише, теперь ${v} процентов`); render(); return; }
+
+  if (has(t, ['замолчи', 'тихо', 'хватит говорить', 'стоп'])) {
+    window.speechSynthesis?.cancel(); status = 'idle'; render(); return;
+  }
+  if (has(t, ['повтори', 'скажи ещё раз', 'ещё раз'])) { say(lastSaid || 'Нечего повторять'); return; }
+
+  if (has(t, ['который час', 'сколько времени', 'текущее время', 'время сейчас'])) {
+    const now = new Date();
+    say(`Сейчас ${now.getHours()} часов ${now.getMinutes()} минут`); return;
+  }
+  if (has(t, ['какое сегодня', 'сегодня какое', 'какой сегодня', 'сегодня число', 'сегодня дата', 'какое число'])) {
+    const d = new Date();
+    const months = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
+    const days   = ['воскресенье','понедельник','вторник','среда','четверг','пятница','суббота'];
+    say(`Сегодня ${d.getDate()} ${months[d.getMonth()]}, ${days[d.getDay()]}`); return;
+  }
+  if (has(t, ['завтра', 'послезавтра'])) {
+    const d = new Date(); d.setDate(d.getDate() + (has(t, ['послезавтра']) ? 2 : 1));
+    const months = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
+    const days   = ['воскресенье','понедельник','вторник','среда','четверг','пятница','суббота'];
+    say(`${has(t, ['послезавтра']) ? 'Послезавтра' : 'Завтра'} будет ${d.getDate()} ${months[d.getMonth()]}, ${days[d.getDay()]}`); return;
+  }
+
+  if (has(t, ['сколько будет', 'посчитай', 'вычисли', 'калькулятор'])) {
+    let q = t.replace(/сколько будет|посчитай|вычисли|калькулятор/g, '').trim();
+    const res = calcExpr(q);
+    if (res !== null) { say(`Результат: ${res}`); return; }
+    say('Открываю калькулятор'); go('https://www.google.com/search?q=калькулятор'); return;
+  }
+  if (has(t, ['пошути', 'расскажи анекдот', 'анекдот', 'рассмеши'])) {
+    const jokes = [
+      'Программист видит перед собой стакан. Говорит: стакан наполовину пуст. Он оптимист.',
+      'Почему программисты путают Хэллоуин и Рождество? Потому что Oct 31 равно Dec 25!',
+      'Жена говорит мужу: иди купи хлеб, и если будут яйца, купи десяток. Муж вернулся с десятью буханками хлеба.',
+      'Как называется сон программиста? Восемь часов без ошибок.',
+    ];
+    say(rnd(jokes)); return;
+  }
+  if (has(t, ['найди', 'поиск', 'поищи', 'поищи информацию'])) {
+    const q = t.replace(/найди|поиск в интернете|поиск|поищи информацию|поищи/g, '').trim();
+    say(q ? `Ищу: ${q}` : 'Открываю Яндекс');
+    go(`https://yandex.ru/search/?text=${encodeURIComponent(q)}`); return;
+  }
+  if (has(t, ['переведи', 'перевод', 'переводчик', 'перевести'])) {
+    let q = t; ['как переводится','переведи','перевод','перевести','переводчик','слово'].forEach(w => q = q.replace(w, '').trim());
+    say('Открываю переводчик'); go(`https://translate.google.com/?sl=ru&tl=en&text=${encodeURIComponent(q)}`); return;
+  }
+  if (has(t, ['фильм', 'кино', 'смотреть', 'сериал'])) {
+    let q = t; ['хочу посмотреть','фильм','кино','смотреть','сериал'].forEach(w => q = q.replace(w, '').trim());
+    say('Ищу фильм'); go(`https://yandex.ru/video/search?text=${encodeURIComponent((q || 'фильм') + ' смотреть онлайн')}`); return;
+  }
+  if (has(t, ['открой сайт', 'зайди на', 'открой страницу'])) {
+    let q = t.replace(/открой сайт|зайди на|открой страницу/g, '').trim();
+    if (q && !q.startsWith('http')) q = 'https://' + q.replace(/^www\./, '');
+    say('Открываю'); go(q || 'https://google.com'); return;
+  }
+  if (has(t, ['погода', 'температура'])) {
+    let city = 'алматы';
+    const m = t.match(/погода\s+(?:в|на|в городе)?\s*([а-яёa-z]+)/i);
+    if (m) city = m[1];
+    say(`Погода в ${city}`); go(`https://yandex.ru/pogoda/${encodeURIComponent(city)}`); return;
+  }
+  if (has(t, ['где находится', 'как добраться', 'показать на карте', 'карта'])) {
+    let q = t.replace(/где находится|как добраться|показать на карте|карта/g, '').trim();
+    say(q ? `Ищу на карте: ${q}` : 'Открываю карты');
+    go(`https://yandex.ru/maps/?text=${encodeURIComponent(q)}`); return;
+  }
+
+  const rules = [
+    {kw:['привет','здравствуй','хай','добрый день','салют'],    fn:()=>say(rnd(['Привет! Чем могу помочь?','Здравствуй! Слушаю тебя.','Привет! Я здесь.']))},
+    {kw:['пока','до свидания','выход'],                          fn:()=>say(rnd(['До свидания!','Рад был помочь!','Удачи!']))},
+    {kw:['как тебя зовут','кто ты','твоё имя'],                  fn:()=>say('Меня зовут Халид — твой голосовой помощник!')},
+    {kw:['команды','что умеешь','помощь','список'],              fn:()=>{ cmdsOpen=true; say('Вот список доступных команд'); render(); }},
+    {kw:['вконтакте','вк'],                                      fn:()=>{ say('Открываю ВКонтакте'); go('https://vk.com/feed'); }},
+    {kw:['ютуб','youtube','ютьюб'],                              fn:()=>{ say('Открываю YouTube'); go('https://youtube.com'); }},
+    {kw:['гугл','google'],                                       fn:()=>{ say('Открываю Google'); go('https://google.com'); }},
+    {kw:['додо','пицца'],                                        fn:()=>{ say('Открываю Додо Пицца'); go('https://dodopizza.kz/almaty'); }},
+    {kw:['музыка','включи музыку','послушать'],                  fn:()=>{ say('Открываю музыку'); go('https://music.youtube.com'); }},
+    {kw:['как дела','как ты'],                                   fn:()=>say(rnd(['Отлично! А как ты?','В порядке, жду команд!','Всё хорошо, спасибо!']))},
+    {kw:['спасибо','благодарю','молодец'],                       fn:()=>say(rnd(['Пожалуйста!','Рад помочь!','Обращайся!']))},
+    {kw:['новости','что нового'],                                fn:()=>{ say('Открываю новости'); go('https://yandex.ru/news'); }},
+    {kw:['телеграм','telegram'],                                 fn:()=>{ say('Открываю Telegram'); go('https://web.telegram.org'); }},
+    {kw:['инстаграм','instagram'],                               fn:()=>{ say('Открываю Instagram'); go('https://instagram.com'); }},
+    {kw:['тикток','tiktok'],                                     fn:()=>{ say('Открываю TikTok'); go('https://tiktok.com'); }},
+    {kw:['вики','wikipedia','что такое'],                        fn:()=>{
+      let q = t.replace(/вики|wikipedia|что такое|кто такой|кто такая/g,'').trim();
+      say('Ищу в Википедии'); go(`https://ru.wikipedia.org/w/index.php?search=${encodeURIComponent(q)}`);
+    }},
+  ];
+  for (const r of rules) { if (has(t, r.kw)) { r.fn(); return; } }
+  say(rnd(['Не понял команду. Попробуй снова.', 'Скажи «команды», чтобы узнать что я умею.', 'Повтори, пожалуйста.']));
+}
+
+let heard = 'Нажми кнопку «слушать»';
+
+function startListening() {
+  if (status !== 'idle') return;
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { heard = 'Используй Chrome для распознавания речи'; render(); return; }
+  const rec = new SR();
+  rec.lang = 'ru-RU';
+  rec.interimResults = false;
+  rec.maxAlternatives = 1;
+  rec.onstart  = () => { status = 'listening'; heard = 'Слушаю...'; render(); };
+  rec.onresult = e  => { const txt = e.results[0][0].transcript; heard = txt; handle(txt); };
+  rec.onerror  = e  => { heard = e.error === 'no-speech' ? 'Не услышал. Попробуй снова.' : `Ошибка: ${e.error}`; status = 'idle'; render(); };
+  rec.onend    = () => { if (status === 'listening') { status = 'idle'; render(); } };
+  rec.start();
+}
+
+function sendText() {
+  const inp = document.getElementById('text-input');
+  if (!inp || !inp.value.trim()) return;
+  const txt = inp.value.trim();
+  inp.value = '';
+  heard = txt;
+  handle(txt);
+}
+
+function render() {
+  const isL = status === 'listening', isS = status === 'saying';
+  const volIcon = vol === 0 ? 'ti-volume-off' : vol < 40 ? 'ti-volume-2' : 'ti-volume';
+
+  const logHTML = log.length === 0
+    ? `<div style="color:var(--muted);font-size:13px;text-align:center;padding:8px 0">Нажми «Слушать» или введи команду</div>`
+    : log.map(m => `
+      <div class="log-msg ${m.type}">
+        <i class="ti ${m.type === 'user' ? 'ti-microphone' : 'ti-cpu'}"></i>
+        <span>${m.text}</span>
+      </div>`).join('');
+
+  const cats = {};
+  CMDS.forEach(c => { if (!cats[c.cat]) cats[c.cat] = []; cats[c.cat].push(c); });
+  const cmdsHTML = Object.entries(cats).map(([cat, items]) => `
+    <div class="cat-label">${cat}</div>
+    ${items.map(c => `<div class="cmd-chip" onclick="heard='${c.label}';addLog('${c.label}','user')"><i class="ti ${c.icon}"></i>${c.label}</div>`).join('')}
+  `).join('');
+
+  const waveHTML = `<div class="wave">${[0.1,0.25,0.4,0.55,0.4,0.25,0.1].map(d => `<div class="bar" style="height:${14+Math.random()*6}px;animation-delay:${d}s"></div>`).join('')}</div>`;
+
+  document.getElementById('app').innerHTML = `
+    <div class="avatar-ring ${isL ? 'listening' : isS ? 'saying' : ''}">
+      <div class="avatar-inner">
+        ${isS
+          ? `<div style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;background:var(--surface2)">${waveHTML}</div>`
+          : `<img src="photo.jpg" alt="Халид">`
+        }
+      </div>
+    </div>
+
+    <div class="name-block">
+      <div class="name-title">ХАЛИД</div>
+      <div class="name-sub ${isL ? 'listening' : isS ? 'saying' : ''}">
+        ${isL ? 'слушаю...' : isS ? 'говорю...' : 'голосовой помощник'}
+      </div>
+    </div>
+
+    <div class="card heard-card">${heard}</div>
+
+    <div class="btn-row">
+      <button class="btn" onclick="startListening()" ${status !== 'idle' ? 'disabled' : ''}>
+        <i class="ti ti-microphone"></i>
+        ${status === 'idle' ? 'Слушать' : status === 'listening' ? 'Слушаю...' : 'Говорю...'}
+      </button>
+      <button class="btn btn-icon" onclick="cmdsOpen=!cmdsOpen;render()" title="Команды">
+        <i class="ti ${cmdsOpen ? 'ti-x' : 'ti-menu-2'}" style="font-size:18px"></i>
+      </button>
+    </div>
+
+    <div class="card" style="padding:8px 12px;">
+      <div style="display:flex;gap:8px;align-items:center;">
+        <input id="text-input" type="text" placeholder="Введи команду текстом..."
+          style="flex:1;background:transparent;border:none;color:var(--text);font-family:inherit;font-size:14px;outline:none;"
+          onkeydown="if(event.key==='Enter')sendText()">
+        <button onclick="sendText()" style="background:var(--accent);border:none;border-radius:8px;padding:6px 12px;color:#0d0f14;font-weight:600;cursor:pointer;font-size:13px;">↵</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="vol-row">
+        <i class="ti ${volIcon}" style="font-size:18px;color:var(--muted)"></i>
+        <input type="range" min="0" max="100" step="1" value="${vol}"
+          oninput="vol=+this.value;volRef.current=vol;render()" aria-label="Громкость">
+        <span class="vol-label">${vol}%</span>
+      </div>
+    </div>
+
+    ${cmdsOpen ? `
+    <div class="card kh-in">
+      <div class="section-label">Доступные команды</div>
+      <div class="cmds-grid">${cmdsHTML}</div>
+    </div>` : ''}
+
+    <div class="card">
+      <div class="section-label">История</div>
+      <div class="log-wrap">
+        ${logHTML}
+        <div id="log-bottom"></div>
+      </div>
+    </div>
+
+    <div class="footer">
+      Лучше работает в Chrome · Скажи «команды» для справки
+      <br><span id="voice-info" style="font-size:10px;color:var(--muted);cursor:pointer" onclick="showVoices()">🔊 голос: загрузка...</span>
+    </div>
+  `;
+  updateVoiceInfo();
+}
+
+render();
+</script>
+</body>
+</html>
